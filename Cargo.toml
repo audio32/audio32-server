@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 jack = "0.13.3"
+libc = "0.2.174"
 
