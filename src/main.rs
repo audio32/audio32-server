@@ -41,11 +41,12 @@ fn main() {
             last_time = time;
             let sampling_freq = 1_000_000_000_000 * buf_size as u128 * CALC_EVERY as u128 / nanos_per_buffer;
             println!(
-                "ns p buf {}/{} f: {}, delta: {}ppm",
+                "ns p buf {}/{} f: {}, delta: {}ppm, time: {}",
                 nanos_per_buffer,
                 buf_size,
                 sampling_freq,
-                1_000_000 - ((last_sampling_freq * 1_000_000) / sampling_freq) as i64
+                1_000_000 - ((last_sampling_freq * 1_000_000) / sampling_freq) as i64,
+                time
             );
             last_sampling_freq = sampling_freq;
         }
