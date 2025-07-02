@@ -68,7 +68,15 @@ fn main() {
             let mut pkg = [0u8;1500];
             pkg[0..4].copy_from_slice(&seq.to_le_bytes());
             seq = seq.wrapping_add(1);
-            pkg[4..result.len()+4].copy_from_slice(&result[..]);
+
+            let mut sample_freq = (last_sampling_freq / 1_000) as u32;
+            if sample_freq > 80_000 { // ignoring extremes
+                sample_freq = 48_000;
+            }
+
+            pkg[4..8].copy_from_slice(&sample_freq.to_le_bytes());
+
+            pkg[8..result.len()+8].copy_from_slice(&result[..]);
             let _ = socket.send_to(&pkg[..4 + result.len()], addr).map_err(|e|println!("{:?}", e));
         }
         let out_b_p = out_b.as_mut_slice(ps);
