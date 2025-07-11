@@ -18,27 +18,20 @@ fn main() {
 
     // 2. Register ports. They will be used in a callback that will be
     // called when new data is available.
-    let in_a: jack::Port<jack::AudioIn> = client
-        .register_port("rust_in_l", jack::AudioIn::default())
-        .unwrap();
-    let in_b: jack::Port<jack::AudioIn> = client
-        .register_port("rust_in_r", jack::AudioIn::default())
-        .unwrap();
-    let mut out_a: jack::Port<jack::AudioOut> = client
-        .register_port("rust_out_l", jack::AudioOut::default())
-        .unwrap();
-    let mut out_b: jack::Port<jack::AudioOut> = client
-        .register_port("rust_out_r", jack::AudioOut::default())
-        .unwrap();
+    let mut in_ports = Vec::new();
+    for i in 0..8 {
+        let a: jack::Port<jack::AudioIn> = client
+            .register_port(&format!("rust_in_{i}_l",), jack::AudioIn::default())
+            .unwrap();
+        in_ports.push(a);
+    }
     const CALC_EVERY: u32 = 512;
     let mut seq = 0u32;
     let mut callback = 0;
-    let mut buf_out: Vec<u16> = Vec::with_capacity(1500);
     let mut last_time = get_time();
     let mut last_sampling_freq = 0u128;
     let process_callback = move |_: &jack::Client, ps: &jack::ProcessScope| -> jack::Control {
-        let out_a_p = out_a.as_mut_slice(ps);
-        let buf_size = out_a_p.len();
+        let buf_size = in_ports[0].as_slice(ps).len();
         if callback % CALC_EVERY == 0 {
             let time = get_time();
             let nanos_per_buffer = time.saturating_sub(last_time);
@@ -55,10 +48,17 @@ fn main() {
             );
             last_sampling_freq = sampling_freq;
         }
+
+        let slices = in_ports.iter().map(|a| a.as_slice(ps)).collect::<Vec<_>>();
+        let mut interleaved = Vec::with_capacity(slices.len() * slices[0].len());
+        for i in 0..slices[0].len() {
+            for slice in slices.iter() {
+                interleaved.push(slice[i]);
+            }
+        }
         callback = callback.wrapping_add(1);
         // transmission
-        for out_a_p in out_a_p.chunks(64) {
-            buf_out.clear();
+        for frame in interleaved.chunks_exact(64 * 8) {
             let mut pkg = [0u8; 1500];
 
             let mut sample_freq = (last_sampling_freq / 1_000) as u32;
@@ -71,25 +71,19 @@ fn main() {
             seq = seq.wrapping_add(1);
             pkg[4..8].copy_from_slice(&sample_freq.to_le_bytes());
             let mut pos = 8;
-
-            for e in out_a_p.iter().map(|n| (*n * i16::MAX as f32) as i16) {
-                let [a, b] = e.to_le_bytes();
-                for _ in 0..8 {
-                    pkg[pos] = a;
-                    pkg[pos + 1] = b;
-                    pos += 2;
-                }
+            for sample in frame.iter() {
+                let sample = (*sample * i16::MAX as f32) as i16;
+                let [a, b] = sample.to_le_bytes();
+                pkg[pos] = a;
+                pkg[pos + 1] = b;
+                pos += 2;
             }
 
             let _ = socket
                 .send_to(&pkg[..pos], addr)
                 .map_err(|e| println!("{:?}", e));
         }
-        let out_b_p = out_b.as_mut_slice(ps);
-        let in_a_p = in_a.as_slice(ps);
-        let in_b_p = in_b.as_slice(ps);
-        out_a_p.clone_from_slice(in_a_p);
-        out_b_p.clone_from_slice(in_b_p);
+
         jack::Control::Continue
     };
     let process = jack::contrib::ClosureProcessHandler::new(process_callback);
