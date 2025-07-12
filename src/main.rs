@@ -1,17 +1,64 @@
-use std::io;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::SocketAddr;
+use tokio::net::UdpSocket;
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::Sender;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     // "[fe80::a401:1bff:fea2:3f5%10]:50349"
     let addr = std::env::var("REMOTE_ADDR")
         .expect("REMOTE_ADDR environment variable not set")
         .parse::<SocketAddr>()
         .unwrap();
-    let socket = UdpSocket::bind("[::]:50349").unwrap();
+    let sai_interface = std::env::var("REMOTE_SAI")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(0);
+    println!("Connecting to {addr}, SAI interface: {sai_interface}");
+    let socket = UdpSocket::bind(format!("[::]:{}", 50349 + sai_interface))
+        .await
+        .unwrap();
     /*let mut buf = [0; 2048];
     let res = socket.recv_from(&mut buf);
     println!("res{:?}   {:?}", res, buf);*/
+    let (tx, mut rx) = mpsc::channel(32);
 
+    for i in 0..4 {
+        let tx0 = tx.clone();
+        std::thread::spawn(move || jack_client(i, tx0));
+    }
+
+    loop {
+        let (pkg, sai_iface) = rx.recv().await.unwrap();
+        let mut socket_addr = SocketAddr::from(addr);
+        /*if sai_iface > 3 {
+            socket_addr.set_port(1234);
+        }*/
+        if let Err(e) = socket.send_to(&pkg[..], socket_addr).await {
+            println!("Error sending UDP packet: {e}");
+        }
+    }
+    /*// 5. Not needed as the async client will cease processing on `drop`.
+    if let Err(err) = active_client.deactivate() {
+        eprintln!("JACK exited with error: {err}");
+    }*/
+}
+
+fn get_time() -> u128 {
+    let mut timespec = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let res = unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut timespec) };
+    assert_eq!(
+        res, 0,
+        "Could not get libc::clock_gettime(libc::CLOCK_REALTIME, /*...*/)"
+    );
+
+    timespec.tv_nsec as u128 + timespec.tv_sec as u128 * 1_000_000_000u128
+}
+
+fn jack_client(sai_interface: u32, sender: Sender<(Vec<u8>, u32)>) {
     // 1. Create client
     let (client, _status) =
         jack::Client::new("rust_jack_simple", jack::ClientOptions::default()).unwrap();
@@ -58,7 +105,7 @@ fn main() {
         }
         callback = callback.wrapping_add(1);
         // transmission
-        for frame in interleaved.chunks_exact(64 * 8) {
+        for frame in interleaved.chunks(90 * 8) {
             let mut pkg = [0u8; 1500];
 
             let mut sample_freq = (last_sampling_freq / 1_000) as u32;
@@ -66,10 +113,10 @@ fn main() {
                 // ignoring extremes
                 sample_freq = 48_000;
             }
-
+            let sai_interface = sai_interface as u32;
             pkg[0..4].copy_from_slice(&seq.to_le_bytes());
             seq = seq.wrapping_add(1);
-            pkg[4..8].copy_from_slice(&sample_freq.to_le_bytes());
+            pkg[4..8].copy_from_slice(&sai_interface.to_le_bytes());
             let mut pos = 8;
             for sample in frame.iter() {
                 let sample = (*sample * i16::MAX as f32) as i16;
@@ -79,9 +126,9 @@ fn main() {
                 pos += 2;
             }
 
-            let _ = socket
-                .send_to(&pkg[..pos], addr)
-                .map_err(|e| println!("{:?}", e));
+            if let Err(e) = sender.try_send((pkg[..pos].to_vec(), sai_interface)) {
+                println!("Error sending packet: {e}");
+            }
         }
 
         jack::Control::Continue
@@ -90,34 +137,7 @@ fn main() {
 
     // 3. Activate the client, which starts the processing.
     let active_client = client.activate_async((), process).unwrap();
-
-    // 4. Wait for user input to quit
-    println!("Press enter/return to quit...");
-    let mut user_input = String::new();
-    let socket = UdpSocket::bind("[::]:50348").unwrap();
     loop {
-        io::stdin().read_line(&mut user_input).ok();
-        let _ = socket
-            .send_to(&[0, 0, 0, 0, 0, 0, 0, 0], addr)
-            .map_err(|e| println!("{:?}", e));
+        std::thread::sleep(std::time::Duration::from_millis(1000));
     }
-
-    // 5. Not needed as the async client will cease processing on `drop`.
-    if let Err(err) = active_client.deactivate() {
-        eprintln!("JACK exited with error: {err}");
-    }
-}
-
-fn get_time() -> u128 {
-    let mut timespec = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    let res = unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut timespec) };
-    assert_eq!(
-        res, 0,
-        "Could not get libc::clock_gettime(libc::CLOCK_REALTIME, /*...*/)"
-    );
-
-    timespec.tv_nsec as u128 + timespec.tv_sec as u128 * 1_000_000_000u128
 }
