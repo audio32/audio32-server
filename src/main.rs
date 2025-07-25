@@ -23,9 +23,9 @@ async fn main() {
     println!("res{:?}   {:?}", res, buf);*/
     let (tx, mut rx) = mpsc::channel(32);
 
-    for i in 0..4 {
+    {
         let tx0 = tx.clone();
-        std::thread::spawn(move || jack_client(i, tx0));
+        std::thread::spawn(move || jack_client(tx0));
     }
 
     loop {
@@ -58,7 +58,7 @@ fn get_time() -> u128 {
     timespec.tv_nsec as u128 + timespec.tv_sec as u128 * 1_000_000_000u128
 }
 
-fn jack_client(sai_interface: u32, sender: Sender<(Vec<u8>, u32)>) {
+fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
     // 1. Create client
     let (client, _status) =
         jack::Client::new("rust_jack_simple", jack::ClientOptions::default()).unwrap();
@@ -66,14 +66,14 @@ fn jack_client(sai_interface: u32, sender: Sender<(Vec<u8>, u32)>) {
     // 2. Register ports. They will be used in a callback that will be
     // called when new data is available.
     let mut in_ports = Vec::new();
-    for i in 0..8 {
+    for i in 0..32 {
         let a: jack::Port<jack::AudioIn> = client
             .register_port(&format!("rust_in_{i}_l",), jack::AudioIn::default())
             .unwrap();
         in_ports.push(a);
     }
     const CALC_EVERY: u32 = 512;
-    let mut seq = 0u32;
+    let mut seq = [0u32; 4];
     let mut callback = 0;
     let mut last_time = get_time();
     let mut last_sampling_freq = 0u128;
@@ -97,37 +97,40 @@ fn jack_client(sai_interface: u32, sender: Sender<(Vec<u8>, u32)>) {
         }
 
         let slices = in_ports.iter().map(|a| a.as_slice(ps)).collect::<Vec<_>>();
-        let mut interleaved = Vec::with_capacity(slices.len() * slices[0].len());
-        for i in 0..slices[0].len() {
-            for slice in slices.iter() {
-                interleaved.push(slice[i]);
+        for (sai_interface, slices) in slices.chunks(8).enumerate() {
+            let seq = &mut seq[sai_interface];
+            let mut interleaved = Vec::with_capacity(slices.len() * slices[0].len());
+            for i in 0..slices[0].len() {
+                for slice in slices.iter() {
+                    interleaved.push(slice[i]);
+                }
             }
-        }
-        callback = callback.wrapping_add(1);
-        // transmission
-        for frame in interleaved.chunks(90 * 8) {
-            let mut pkg = [0u8; 1500];
+            callback = callback.wrapping_add(1);
+            // transmission
+            for frame in interleaved.chunks(90 * 8) {
+                let mut pkg = [0u8; 1500];
 
-            let mut sample_freq = (last_sampling_freq / 1_000) as u32;
-            if sample_freq > 80_000 {
-                // ignoring extremes
-                sample_freq = 48_000;
-            }
-            let sai_interface = sai_interface as u32;
-            pkg[0..4].copy_from_slice(&seq.to_le_bytes());
-            seq = seq.wrapping_add(1);
-            pkg[4..8].copy_from_slice(&sai_interface.to_le_bytes());
-            let mut pos = 8;
-            for sample in frame.iter() {
-                let sample = (*sample * i16::MAX as f32) as i16;
-                let [a, b] = sample.to_le_bytes();
-                pkg[pos] = a;
-                pkg[pos + 1] = b;
-                pos += 2;
-            }
+                let mut sample_freq = (last_sampling_freq / 1_000) as u32;
+                if sample_freq > 80_000 {
+                    // ignoring extremes
+                    sample_freq = 48_000;
+                }
+                let sai_interface = sai_interface as u32;
+                pkg[0..4].copy_from_slice(&seq.to_le_bytes());
+                *seq = seq.wrapping_add(1);
+                pkg[4..8].copy_from_slice(&sai_interface.to_le_bytes());
+                let mut pos = 8;
+                for sample in frame.iter() {
+                    let sample = (*sample * i16::MAX as f32) as i16;
+                    let [a, b] = sample.to_le_bytes();
+                    pkg[pos] = a;
+                    pkg[pos + 1] = b;
+                    pos += 2;
+                }
 
-            if let Err(e) = sender.try_send((pkg[..pos].to_vec(), sai_interface)) {
-                println!("Error sending packet: {e}");
+                if let Err(e) = sender.try_send((pkg[..pos].to_vec(), sai_interface)) {
+                    println!("Error sending packet: {e}");
+                }
             }
         }
 
