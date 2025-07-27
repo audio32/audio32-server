@@ -10,18 +10,12 @@ async fn main() {
         .expect("REMOTE_ADDR environment variable not set")
         .parse::<SocketAddr>()
         .unwrap();
-    let sai_interface = std::env::var("REMOTE_SAI")
-        .ok()
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(0);
-    println!("Connecting to {addr}, SAI interface: {sai_interface}");
-    let socket = UdpSocket::bind(format!("[::]:{}", 50349 + sai_interface))
-        .await
-        .unwrap();
+    println!("Connecting to {addr}");
+    let socket = UdpSocket::bind("[::]:0").await.unwrap();
     /*let mut buf = [0; 2048];
     let res = socket.recv_from(&mut buf);
     println!("res{:?}   {:?}", res, buf);*/
-    let (tx, mut rx) = mpsc::channel(32);
+    let (tx, mut rx) = mpsc::channel(4);
 
     {
         let tx0 = tx.clone();
