@@ -54,8 +54,14 @@ fn get_time() -> u128 {
 
 fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
     // 1. Create client
-    let (client, _status) =
-        jack::Client::new("rust_jack_simple", jack::ClientOptions::default()).unwrap();
+    let (client, _status) = jack::Client::new(
+        &format!(
+            "Audio {}",
+            std::env::var("REMOTE_ADDR").expect("REMOTE_ADDR environment variable not set")
+        ),
+        jack::ClientOptions::default(),
+    )
+    .unwrap();
 
     // 2. Register ports. They will be used in a callback that will be
     // called when new data is available.
