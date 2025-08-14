@@ -77,7 +77,8 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
     let mut callback = 0;
     let mut last_time = get_time();
     let mut last_sampling_freq = 0u128;
-    let process_callback = move |_: &jack::Client, ps: &jack::ProcessScope| -> jack::Control {
+    let process_callback = move |client: &jack::Client, ps: &jack::ProcessScope| -> jack::Control {
+        let callback_sample_number = ps.last_frame_time();
         let buf_size = in_ports[0].as_slice(ps).len();
         if callback % CALC_EVERY == 0 {
             let time = get_time();
@@ -97,8 +98,9 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
         }
 
         let slices = in_ports.iter().map(|a| a.as_slice(ps)).collect::<Vec<_>>();
+
         for (sai_interface, slices) in slices.chunks(8).enumerate() {
-            let seq = &mut seq[sai_interface];
+            let mut seq = callback_sample_number;
             let mut interleaved = Vec::with_capacity(slices.len() * slices[0].len());
             for i in 0..slices[0].len() {
                 for slice in slices.iter() {
@@ -117,7 +119,7 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
                 }
                 let sai_interface = sai_interface as u32;
                 pkg[0..4].copy_from_slice(&seq.to_le_bytes());
-                *seq = seq.wrapping_add(1);
+                seq = seq.wrapping_add((frame.len() / 8) as u32);
                 pkg[4..8].copy_from_slice(&sai_interface.to_le_bytes());
                 let mut pos = 8;
                 for sample in frame.iter() {
