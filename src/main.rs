@@ -78,10 +78,10 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
     let mut last_time = get_time();
     let mut last_sampling_freq = 0u128;
     let process_callback = move |client: &jack::Client, ps: &jack::ProcessScope| -> jack::Control {
+        let time = get_time();
         let callback_sample_number = ps.last_frame_time();
         let buf_size = in_ports[0].as_slice(ps).len();
         if callback % CALC_EVERY == 0 {
-            let time = get_time();
             let nanos_per_buffer = time.saturating_sub(last_time);
             last_time = time;
             let sampling_freq =
