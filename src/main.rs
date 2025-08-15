@@ -73,12 +73,23 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
         in_ports.push(a);
     }
     const CALC_EVERY: u32 = 512;
-    let mut seq = [0u32; 4];
     let mut callback = 0;
     let mut last_time = get_time();
     let mut last_sampling_freq = 0u128;
+    // new
+    let mut times = [0u128; 1024];
+    let mut prev_time = get_time();
+    let mut i = 0;
     let process_callback = move |client: &jack::Client, ps: &jack::ProcessScope| -> jack::Control {
         let time = get_time();
+        let len = times.len();
+        times[i as usize % len] = time - prev_time;
+        if i % (len as u32) == 0 {
+            println!("{:?}", times);
+        }
+        prev_time = time;
+        i = i.wrapping_add(1);
+
         let callback_sample_number = ps.last_frame_time();
         let buf_size = in_ports[0].as_slice(ps).len();
         if callback % CALC_EVERY == 0 {
