@@ -78,7 +78,7 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
     let mut last_time = get_time();
     let mut last_sampling_freq = 0u128;
     // new
-    let mut times = vec![(0, 0); 1024 * 16];
+    let mut times = vec![(0, 0); 1024 * 8];
     let mut prev_time = get_time();
     let mut i = 0;
 
@@ -95,7 +95,8 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
         let cycle_times = ps.cycle_times().unwrap();
 
         let callback_late = (jack_time as i128 - cycle_times.current_usecs as i128) * 1000;
-        let ptp_jack_diff = time as i128 - jack_time as i128 * 1_000;
+        // jack time = 0 in ptp time
+        let ptp_jack_diff = time as i128 - (jack_time as i128 * 1_000);
 
         let ptp_start_time = time as i128 + ptp_jack_diff + callback_late;
         let ptp_start_time_frames = cycle_times.current_frames;
