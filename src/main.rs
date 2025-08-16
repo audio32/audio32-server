@@ -78,7 +78,7 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
     let mut last_time = get_time();
     let mut last_sampling_freq = 0u128;
     // new
-    let mut times = [0; 1024];
+    let mut times = [(0, 0); 1024];
     let mut prev_time = get_time();
     let mut i = 0;
 
@@ -87,8 +87,8 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
         let mut jack_time = client.time();
 
         if (time as i128 - get_time() as i128).abs() > 1000 {
-            let mut time = get_time();
-            let mut jack_time = client.time();
+            time = get_time();
+            jack_time = client.time();
             println!("took too long!");
         }
 
@@ -96,18 +96,22 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
         let cycle_times = ps.cycle_times().unwrap();
 
         let callback_late = jack_time as i128 - cycle_times.current_usecs as i128;
-        println!(
+
+        let ptp_start_time = time as i128 - callback_late;
+        let ptp_start_time_frames = cycle_times.current_frames;
+
+        /*println!(
             "diff between clocks {} ({:x} {:x}) frames {} correction {}",
             (time as i128 / 1000) - jack_time as i128,
             time as i128 / 1000,
             jack_time,
             cycle_times.current_frames,
             callback_late,
-        );
+        );*/
 
         let time_frames = ps.frames_since_cycle_start();
         let len = times.len();
-        times[i as usize % len] = callback_late;
+        times[i as usize % len] = (ptp_start_time, ptp_start_time_frames);
         if i % (len as u32) == 0 {
             println!("{:?}", times);
         }
