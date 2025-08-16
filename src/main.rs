@@ -98,7 +98,7 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
         // jack time = 0 in ptp time
         let ptp_jack_diff = time as i128 - (jack_time as i128 * 1_000);
 
-        let ptp_start_time = time as i128 + ptp_jack_diff + callback_late;
+        let ptp_start_time = time as i128 /*+ ptp_jack_diff */ + callback_late;
         let ptp_start_time_frames = cycle_times.current_frames;
 
         /*println!(
