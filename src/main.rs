@@ -87,7 +87,7 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
         let mut jack_time = client.time();
         let time_check = get_time() as i128 - time as i128;
 
-        if time_check.abs() > 1000 {
+        if time_check.abs() > 4000 {
             println!("took too long! {time_check}ns");
         }
 
