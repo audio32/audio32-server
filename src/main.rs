@@ -97,8 +97,10 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
 
         let callback_late = jack_time as i128 - cycle_times.current_usecs as i128;
         println!(
-            "diff between clocks {} frames {} correction {}",
-            time as i128 / 1000 - jack_time as i128,
+            "diff between clocks {} ({:x} {:x}) frames {} correction {}",
+            (time as i128 / 1000) - jack_time as i128,
+            time as i128 / 1000,
+            jack_time,
             cycle_times.current_frames,
             callback_late,
         );
