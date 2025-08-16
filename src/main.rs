@@ -85,11 +85,10 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
     let process_callback = move |client: &jack::Client, ps: &jack::ProcessScope| -> jack::Control {
         let mut time = get_time();
         let mut jack_time = client.time();
+        let time_check = get_time() as i128 - time as i128;
 
-        if (time as i128 - get_time() as i128).abs() > 1000 {
-            time = get_time();
-            jack_time = client.time();
-            println!("took too long!");
+        if time_check.abs() > 1000 {
+            println!("took too long! {time_check}ns");
         }
 
         //println!("{}", (time as i128 / 1000 - jack_time as i128));
