@@ -87,7 +87,8 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
             .map(|_| {
                 let time = get_time();
                 let jack_time = client.time();
-                let delay = (get_time() as i128 - time as i128).abs();
+                let time_after = get_time();
+                let delay = (time_after as i128 - time as i128).abs();
                 (time, jack_time, delay)
             })
             .min_by_key(|&(_, _, delay)| delay)
