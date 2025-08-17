@@ -128,7 +128,6 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
         prev_time = ptp_start_time as u128;
         i = i.wrapping_add(1);
 
-        let callback_sample_number = ps.last_frame_time();
         let buf_size = in_ports[0].as_slice(ps).len();
         if callback % CALC_EVERY == 0 {
             let nanos_per_buffer = ptp_start_time.saturating_sub(last_time);
@@ -149,7 +148,7 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
         let slices = in_ports.iter().map(|a| a.as_slice(ps)).collect::<Vec<_>>();
 
         for (sai_interface, slices) in slices.chunks(8).enumerate() {
-            let mut seq = callback_sample_number;
+            let mut seq = ptp_start_time_frames;
             let mut interleaved = Vec::with_capacity(slices.len() * slices[0].len());
             for i in 0..slices[0].len() {
                 for slice in slices.iter() {
