@@ -93,7 +93,7 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
             let jack_time_new = client.time();
             let time_check_new = get_time() as i128 - time as i128;
 
-            if time_check.abs() > time_check_new {
+            if time_check.abs() > time_check_new.abs() {
                 time = time_new;
                 jack_time = jack_time_new;
                 time_check = time_check_new;
