@@ -92,7 +92,7 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
             time_check = get_time() as i128 - time as i128;
 
             if time_check.abs() < 4000 {
-                return;
+                break;
             }
         }
         if time_check.abs() > 4000 {
