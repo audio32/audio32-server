@@ -78,15 +78,23 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
     let mut last_time = get_time();
     let mut last_sampling_freq = 0u128;
     // new
-    let mut times = vec![(0, 0, 0); 1024 * 16];
+    let mut times = vec![(0, 0); 1024 * 16];
     let mut prev_time = get_time();
     let mut i = 0;
 
     let process_callback = move |client: &jack::Client, ps: &jack::ProcessScope| -> jack::Control {
-        let mut time = get_time();
-        let mut jack_time = client.time();
-        let time_check = get_time() as i128 - time as i128;
+        let mut time = 0;
+        let mut jack_time = 0;
+        let mut time_check = i128::MAX;
+        for i in 0..4 {
+            time = get_time();
+            jack_time = client.time();
+            time_check = get_time() as i128 - time as i128;
 
+            if time_check.abs() < 4000 {
+                return;
+            }
+        }
         if time_check.abs() > 4000 {
             println!("took too long! {time_check}ns");
         }
@@ -110,11 +118,10 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
 
         let time_frames = ps.frames_since_cycle_start();
         let len = times.len();
-        if time_check.abs() < 4000 {
-            times[i as usize % len] = (ptp_start_time, ptp_start_time_frames, callback_late);
-            if i % (len as u32) == 0 {
-                println!("{:?}", times);
-            }
+
+        times[i as usize % len] = (ptp_start_time, ptp_start_time_frames);
+        if i % (len as u32) == 0 {
+            println!("{:?}", times);
         }
         prev_time = time;
         i = i.wrapping_add(1);
