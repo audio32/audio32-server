@@ -85,23 +85,23 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
     let process_callback = move |client: &jack::Client, ps: &jack::ProcessScope| -> jack::Control {
         let mut time = 0;
         let mut jack_time = 0;
-        let mut time_check = i128::MAX;
+        let mut measurement_delay = i128::MAX;
 
         // try 4 times to get the best timing
         for _i in 0..3 {
             let time_new = get_time();
             let jack_time_new = client.time();
-            let time_check_new = get_time() as i128 - time as i128;
+            let measurement_delay_new = (get_time() as i128 - time as i128).abs();
 
-            if time_check.abs() > time_check_new.abs() {
+            if measurement_delay_new < measurement_delay {
                 time = time_new;
                 jack_time = jack_time_new;
-                time_check = time_check_new;
+                measurement_delay = measurement_delay_new;
             }
         }
 
-        if time_check.abs() > 4000 {
-            println!("took too long! {time_check}ns");
+        if measurement_delay > 4000 {
+            println!("took too long! {measurement_delay}ns");
         }
 
         //println!("{}", (time as i128 / 1000 - jack_time as i128));
