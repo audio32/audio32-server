@@ -86,15 +86,20 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
         let mut time = 0;
         let mut jack_time = 0;
         let mut time_check = i128::MAX;
-        for i in 0..4 {
-            time = get_time();
-            jack_time = client.time();
-            time_check = get_time() as i128 - time as i128;
 
-            if time_check.abs() < 4000 {
-                break;
+        // try 4 times to get the best timing
+        for _i in 0..3 {
+            let time_new = get_time();
+            let jack_time_new = client.time();
+            let time_check_new = get_time() as i128 - time as i128;
+
+            if time_check.abs() > time_check_new {
+                time = time_new;
+                jack_time = jack_time_new;
+                time_check = time_check_new;
             }
         }
+
         if time_check.abs() > 4000 {
             println!("took too long! {time_check}ns");
         }
