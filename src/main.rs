@@ -1,3 +1,4 @@
+use az::CheckedCast;
 use std::net::SocketAddr;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
@@ -103,7 +104,10 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
 
         let callback_late = (jack_time as i128 - cycle_times.current_usecs as i128) * 1_000;
 
-        let ptp_start_time = time as i128 - callback_late;
+        let ptp_start_time = (time as i128 - callback_late);
+        let ptp_start_time: u128 = ptp_start_time
+            .checked_cast()
+            .expect("timestamp should not be negative");
         let ptp_start_time_frames = cycle_times.current_frames;
 
         /*println!(
@@ -115,25 +119,24 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
             callback_late,
         );*/
 
-        let time_frames = ps.frames_since_cycle_start();
         let len = times.len();
 
         times[i as usize % len] = (ptp_start_time, ptp_start_time_frames);
         if i % (len as u32) == 0 {
             println!("{:?}", times);
         }
-        prev_time = time;
+        prev_time = ptp_start_time as u128;
         i = i.wrapping_add(1);
 
         let callback_sample_number = ps.last_frame_time();
         let buf_size = in_ports[0].as_slice(ps).len();
         if callback % CALC_EVERY == 0 {
-            let nanos_per_buffer = time.saturating_sub(last_time);
-            last_time = time;
+            let nanos_per_buffer = ptp_start_time.saturating_sub(last_time);
+            last_time = ptp_start_time;
             let sampling_freq =
-                1_000_000_000_000 * buf_size as u128 * CALC_EVERY as u128 / nanos_per_buffer;
+                1_000_000_000_000 / 4 * buf_size as u128 * CALC_EVERY as u128 / nanos_per_buffer;
             println!(
-                "ns p buf {}/{} f: {}, delta: {}ppm, time: {}",
+                "ns p buf {}/{} f: {}mHz, delta: {}ppm, time: {}",
                 nanos_per_buffer,
                 buf_size,
                 sampling_freq,
