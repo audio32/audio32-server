@@ -110,9 +110,11 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
 
         let time_frames = ps.frames_since_cycle_start();
         let len = times.len();
-        times[i as usize % len] = (ptp_start_time, ptp_start_time_frames, callback_late);
-        if i % (len as u32) == 0 {
-            println!("{:?}", times);
+        if time_check.abs() < 4000 {
+            times[i as usize % len] = (ptp_start_time, ptp_start_time_frames, callback_late);
+            if i % (len as u32) == 0 {
+                println!("{:?}", times);
+            }
         }
         prev_time = time;
         i = i.wrapping_add(1);
