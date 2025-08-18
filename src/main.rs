@@ -1,8 +1,24 @@
+extern crate core;
+
 use az::CheckedCast;
 use std::net::SocketAddr;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
+
+const INTERFACES_PER_DEVICE: usize = 4;
+const CHANNELS_PER_INTERFACE: usize = 8;
+
+const MAXIMUM_BUFFER_ALLOWED: usize = 4096 * CHANNELS_PER_INTERFACE; // 8 for 8 channels per interface
+
+type Sample = i16;
+
+struct Samples {
+    samples: [[Sample; MAXIMUM_BUFFER_ALLOWED]; INTERFACES_PER_DEVICE],
+    len: usize,
+    frame: u32,
+    time: u128,
+}
 
 #[tokio::main]
 async fn main() {
@@ -24,13 +40,47 @@ async fn main() {
     }
 
     loop {
-        let (pkg, sai_iface) = rx.recv().await.unwrap();
+        let sample = rx.recv().await.unwrap();
         let mut socket_addr = SocketAddr::from(addr);
         /*if sai_iface > 3 {
             socket_addr.set_port(1234);
         }*/
-        if let Err(e) = socket.send_to(&pkg[..], socket_addr).await {
-            println!("Error sending UDP packet: {e}");
+        let is_first = true;
+        for sai_interface in 0..INTERFACES_PER_DEVICE {
+            let samples = &sample.samples[sai_interface][..sample.len];
+            let mut seq = sample.frame;
+            // transmission
+            for frame in samples.chunks(85 * 8) {
+                let mut pkg = [0u8; 1500];
+
+                let mut flags: u32 = (sai_interface & 0b11) as u32;
+                if is_first {
+                    flags |= 1 << 3;
+                }
+                pkg[0..4].copy_from_slice(&flags.to_le_bytes());
+                // writing sequence number
+                pkg[4..8].copy_from_slice(&seq.to_le_bytes());
+                seq = seq.wrapping_add((frame.len() / 8) as u32);
+
+                let mut pos = 8;
+                if is_first {
+                    // put in timestamp
+                    let size = size_of_val(&sample.time);
+                    pkg[pos..pos + size].copy_from_slice(&sample.time.to_le_bytes());
+                    pos += size;
+                }
+
+                for sample in frame.iter() {
+                    let [a, b] = sample.to_le_bytes();
+                    pkg[pos] = a;
+                    pkg[pos + 1] = b;
+                    pos += 2;
+                }
+
+                if let Err(e) = socket.send_to(&pkg[..pos], socket_addr).await {
+                    println!("Error sending UDP packet: {e}");
+                }
+            }
         }
     }
     /*// 5. Not needed as the async client will cease processing on `drop`.
@@ -54,7 +104,7 @@ fn get_time() -> u128 {
     timespec.tv_nsec as u128 + timespec.tv_sec as u128 * 1_000_000_000u128
 }
 
-fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
+fn jack_client(sender: Sender<Box<Samples>>) {
     // 1. Create client
     let (client, _status) = jack::Client::new(
         &format!(
@@ -110,20 +160,11 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
             .expect("timestamp should not be negative");
         let ptp_start_time_frames = cycle_times.current_frames;
 
-        /*println!(
-            "diff between clocks {} ({:x} {:x}) frames {} correction {}",
-            (time as i128 / 1000) - jack_time as i128,
-            time as i128 / 1000,
-            jack_time,
-            cycle_times.current_frames,
-            callback_late,
-        );*/
-
         let len = times.len();
 
         times[i as usize % len] = (ptp_start_time, ptp_start_time_frames);
         if i % (len as u32) == 0 {
-            println!("{:?}", times);
+            //println!("{:?}", times);
         }
         prev_time = ptp_start_time as u128;
         i = i.wrapping_add(1);
@@ -133,9 +174,9 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
             let nanos_per_buffer = ptp_start_time.saturating_sub(last_time);
             last_time = ptp_start_time;
             let sampling_freq =
-                1_000_000_000_000 / 4 * buf_size as u128 * CALC_EVERY as u128 / nanos_per_buffer;
+                1_000_000_000_000 * buf_size as u128 * CALC_EVERY as u128 / nanos_per_buffer;
             println!(
-                "ns p buf {}/{} f: {}mHz, delta: {}ppm, time: {}",
+                "ns p buf {}/{} f: {}mHz, delta: {:>5}ppm, time: {}",
                 nanos_per_buffer,
                 buf_size,
                 sampling_freq,
@@ -147,42 +188,40 @@ fn jack_client(sender: Sender<(Vec<u8>, u32)>) {
 
         let slices = in_ports.iter().map(|a| a.as_slice(ps)).collect::<Vec<_>>();
 
-        for (sai_interface, slices) in slices.chunks(8).enumerate() {
+        let mut samples = Box::new(Samples {
+            samples: [[0; MAXIMUM_BUFFER_ALLOWED]; INTERFACES_PER_DEVICE],
+            len: slices[0].len() * CHANNELS_PER_INTERFACE,
+            frame: ptp_start_time_frames,
+            time: ptp_start_time,
+        });
+        // split 32 channels by 8 for each sai interface
+        for (sai_interface, slices) in slices.chunks(CHANNELS_PER_INTERFACE).enumerate() {
             let mut seq = ptp_start_time_frames;
-            let mut interleaved = Vec::with_capacity(slices.len() * slices[0].len());
+
+            //let mut interleaved = Vec::with_capacity(slices.len() * slices[0].len());
+            let mut pos = 0;
+            assert!(
+                samples.len <= MAXIMUM_BUFFER_ALLOWED,
+                "Maximum buffer size allowed {MAXIMUM_BUFFER_ALLOWED} but it is {}",
+                samples.len
+            );
             for i in 0..slices[0].len() {
                 for slice in slices.iter() {
-                    interleaved.push(slice[i]);
-                }
-            }
-            callback = callback.wrapping_add(1);
-            // transmission
-            for frame in interleaved.chunks(90 * 8) {
-                let mut pkg = [0u8; 1500];
-
-                let mut sample_freq = (last_sampling_freq / 1_000) as u32;
-                if sample_freq > 80_000 {
-                    // ignoring extremes
-                    sample_freq = 48_000;
-                }
-                let sai_interface = sai_interface as u32;
-                pkg[0..4].copy_from_slice(&seq.to_le_bytes());
-                seq = seq.wrapping_add((frame.len() / 8) as u32);
-                pkg[4..8].copy_from_slice(&sai_interface.to_le_bytes());
-                let mut pos = 8;
-                for sample in frame.iter() {
-                    let sample = (*sample * i16::MAX as f32) as i16;
-                    let [a, b] = sample.to_le_bytes();
-                    pkg[pos] = a;
-                    pkg[pos + 1] = b;
-                    pos += 2;
-                }
-
-                if let Err(e) = sender.try_send((pkg[..pos].to_vec(), sai_interface)) {
-                    //println!("Error sending packet: {e}");
+                    let sample = slice[i];
+                    // convert f32 sample into i16 sample
+                    let sample = (sample * i16::MAX as f32) as i16;
+                    samples.samples[sai_interface][pos] = sample;
+                    pos += 1;
                 }
             }
         }
+        let len = samples.len;
+
+        if let Err(e) = sender.try_send(samples) {
+            println!("could not set packet to network thread: {e}");
+        }
+
+        callback = callback.wrapping_add(1);
 
         jack::Control::Continue
     };
