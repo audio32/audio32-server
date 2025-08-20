@@ -9,7 +9,11 @@ use tokio::sync::mpsc::Sender;
 const INTERFACES_PER_DEVICE: usize = 4;
 const CHANNELS_PER_INTERFACE: usize = 8;
 
-const MAXIMUM_BUFFER_ALLOWED: usize = 4096 * CHANNELS_PER_INTERFACE; // 8 for 8 channels per interface
+// Set this to true and server will send only zeros except a 0xFFFF all N samples
+// very useful for synchronization perfing
+const DEBUG_SYNC: bool = false;
+
+const MAXIMUM_BUFFER_ALLOWED: usize = 4096 * CHANNELS_PER_INTERFACE;
 
 type Sample = i16;
 
@@ -210,8 +214,16 @@ fn jack_client(sender: Sender<Box<Samples>>) {
                     let sample = slice[i];
                     // convert f32 sample into i16 sample
                     let sample = (sample * i16::MAX as f32) as i16;
-                    samples.samples[sai_interface][pos] = sample;
+                    if !DEBUG_SYNC {
+                        samples.samples[sai_interface][pos] = sample;
+                    }
                     pos += 1;
+                }
+            }
+            // set evey 32 * 64th sample to 0xFFFF to perf synchronization
+            if DEBUG_SYNC {
+                if ptp_start_time_frames % (32 * 64) == 0 {
+                    samples.samples[0][0] = -1;
                 }
             }
         }
