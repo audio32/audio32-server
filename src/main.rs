@@ -1,7 +1,10 @@
 extern crate core;
 
 use az::CheckedCast;
+use std::io;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
@@ -37,10 +40,12 @@ async fn main() {
     let res = socket.recv_from(&mut buf);
     println!("res{:?}   {:?}", res, buf);*/
     let (tx, mut rx) = mpsc::channel(4);
+    let debug_sync = Arc::new(AtomicBool::new(false));
 
     {
+        let debug_sync = debug_sync.clone();
         let tx0 = tx.clone();
-        std::thread::spawn(move || jack_client(tx0));
+        std::thread::spawn(move || jack_client(tx0, debug_sync));
     }
 
     loop {
@@ -108,7 +113,7 @@ fn get_time() -> u128 {
     timespec.tv_nsec as u128 + timespec.tv_sec as u128 * 1_000_000_000u128
 }
 
-fn jack_client(sender: Sender<Box<Samples>>) {
+fn jack_client(sender: Sender<Box<Samples>>, debug_sync: Arc<AtomicBool>) {
     // 1. Create client
     let (client, _status) = jack::Client::new(
         &format!(
@@ -131,12 +136,12 @@ fn jack_client(sender: Sender<Box<Samples>>) {
     const CALC_EVERY: u32 = 512;
     let mut callback = 0;
     let mut last_time = get_time();
-    let mut last_sampling_freq = 0u128;
+    let mut last_sampling_freq = 0;
     // new
     let mut times = vec![(0, 0); 1024 * 16];
     let mut prev_time = get_time();
     let mut i = 0;
-
+    let debug_sync2 = debug_sync.clone();
     let process_callback = move |client: &jack::Client, ps: &jack::ProcessScope| -> jack::Control {
         let (time, jack_time, measurement_delay) = (0..3)
             .map(|_| {
@@ -148,7 +153,6 @@ fn jack_client(sender: Sender<Box<Samples>>) {
             })
             .min_by_key(|&(_, _, delay)| delay)
             .unwrap();
-
         if measurement_delay > 4000 {
             println!("took too long! {measurement_delay}ns");
         }
@@ -177,14 +181,15 @@ fn jack_client(sender: Sender<Box<Samples>>) {
         if callback % CALC_EVERY == 0 {
             let nanos_per_buffer = ptp_start_time.saturating_sub(last_time);
             last_time = ptp_start_time;
-            let sampling_freq =
-                1_000_000_000_000 * buf_size as u128 * CALC_EVERY as u128 / nanos_per_buffer;
+            let sampling_freq = (1_000_000_000_000 * buf_size as u128 * CALC_EVERY as u128
+                / nanos_per_buffer) as u64;
+
             println!(
                 "ns p buf {}/{} f: {}mHz, delta: {:>5}ppm, time: {}",
                 nanos_per_buffer,
                 buf_size,
                 sampling_freq,
-                1_000_000 - ((last_sampling_freq * 1_000_000) / sampling_freq) as i64,
+                1_000_000 - ((last_sampling_freq * 1_000_000) / sampling_freq),
                 time
             );
             last_sampling_freq = sampling_freq;
@@ -214,16 +219,19 @@ fn jack_client(sender: Sender<Box<Samples>>) {
                     let sample = slice[i];
                     // convert f32 sample into i16 sample
                     let sample = (sample * i16::MAX as f32) as i16;
-                    if !DEBUG_SYNC {
+                    if !debug_sync.load(Ordering::Relaxed) {
                         samples.samples[sai_interface][pos] = sample;
                     }
                     pos += 1;
                 }
             }
             // set evey 32 * 64th sample to 0xFFFF to perf synchronization
-            if DEBUG_SYNC {
+            if debug_sync.load(Ordering::Relaxed) {
                 if ptp_start_time_frames % (32 * 64) == 0 {
-                    samples.samples[0][0] = -1;
+                    let tmp = [-1 as Sample; 8];
+                    for interface in samples.samples.iter_mut() {
+                        interface[..8].copy_from_slice(&tmp);
+                    }
                 }
             }
         }
@@ -242,6 +250,13 @@ fn jack_client(sender: Sender<Box<Samples>>) {
     // 3. Activate the client, which starts the processing.
     let active_client = client.activate_async((), process).unwrap();
     loop {
-        std::thread::sleep(std::time::Duration::from_millis(1000));
+        let stdin = io::stdin();
+        let mut buf = String::new();
+        let res = stdin.read_line(&mut buf);
+        let status = match !debug_sync2.fetch_xor(true, Ordering::Relaxed) {
+            true => "on",
+            false => "off",
+        };
+        println!("Synchronization debug mode {}", status);
     }
 }
