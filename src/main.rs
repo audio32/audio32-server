@@ -1,6 +1,7 @@
 extern crate core;
 
 use az::CheckedCast;
+use jack::Frames;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -225,23 +226,27 @@ fn jack_client(sender: Sender<Box<Samples>>, debug_sync: Arc<AtomicBool>) {
                     let sample = slice[i];
                     // convert f32 sample into i16 sample
                     let sample = (sample * i16::MAX as f32) as i16;
-                    if !debug_sync.load(Ordering::Relaxed) {
-                        samples.samples[sai_interface][pos] = sample;
-                    }
+                    samples.samples[sai_interface][pos] = sample;
                     pos += 1;
                 }
             }
             // set evey 32 * 64th sample to 0xFFFF to perf synchronization
             if debug_sync.load(Ordering::Relaxed) {
-                if ptp_start_time_frames % (32 * 64) == 0 {
+                // mute all other samples
+                samples.samples.iter_mut().flatten().for_each(|s| *s = 0);
+
+                let callback_end = ptp_start_time_frames + slices[0].len() as Frames;
+                let callback_start = ptp_start_time_frames;
+                let sample_mark_pos = callback_end - (callback_end % (32 * 64));
+                if (callback_start..callback_end).contains(&sample_mark_pos) {
+                    let pos = (sample_mark_pos - callback_start) as usize;
                     let tmp = [-1 as Sample; 8];
                     for interface in samples.samples.iter_mut() {
-                        interface[..8].copy_from_slice(&tmp);
+                        interface[pos * 8..][..8].copy_from_slice(&tmp);
                     }
                 }
             }
         }
-        let len = samples.len;
 
         if let Err(e) = sender.try_send(samples) {
             println!("could not set packet to network thread: {e}");
