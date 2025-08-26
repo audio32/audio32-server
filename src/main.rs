@@ -133,10 +133,11 @@ fn jack_client(sender: Sender<Box<Samples>>, debug_sync: Arc<AtomicBool>) {
             .unwrap();
         in_ports.push(a);
     }
-    const CALC_EVERY: u32 = 512;
-    let mut callback = 0;
+    const CALC_EVERY: u32 = 48_000;
     let mut last_time = get_time();
-    let mut last_sampling_freq = 0;
+    let mut last_sample = 0;
+    let mut last_sampling_freq = 0f64;
+    let mut last_info_show = 0;
     // new
     let mut times = vec![(0, 0); 1024 * 16];
     let mut prev_time = get_time();
@@ -178,18 +179,23 @@ fn jack_client(sender: Sender<Box<Samples>>, debug_sync: Arc<AtomicBool>) {
         i = i.wrapping_add(1);
 
         let buf_size = in_ports[0].as_slice(ps).len();
-        if callback % CALC_EVERY == 0 {
+        let tmp_samples_passed = ptp_start_time_frames / 48_000 * 5;
+        if tmp_samples_passed != last_info_show {
+            last_info_show = tmp_samples_passed;
+
+            let samples_passed = ptp_start_time_frames - last_sample;
             let nanos_per_buffer = ptp_start_time.saturating_sub(last_time);
+            let sampling_freq = (samples_passed as f64 * 1e9) / nanos_per_buffer as f64;
+
+            last_sample = ptp_start_time_frames;
             last_time = ptp_start_time;
-            let sampling_freq = (1_000_000_000_000 * buf_size as u128 * CALC_EVERY as u128
-                / nanos_per_buffer) as u64;
 
             println!(
-                "ns p buf {}/{} f: {}mHz, delta: {:>5}ppm, time: {}",
+                "ns p buf {}/{} f: {:.3}Hz, delta: {:>5}ppm, time: {}",
                 nanos_per_buffer,
                 buf_size,
                 sampling_freq,
-                1_000_000 - ((last_sampling_freq * 1_000_000) / sampling_freq),
+                (1_000_000.0 - ((last_sampling_freq * 1_000_000.0) / sampling_freq)) as i64,
                 time
             );
             last_sampling_freq = sampling_freq;
@@ -240,8 +246,6 @@ fn jack_client(sender: Sender<Box<Samples>>, debug_sync: Arc<AtomicBool>) {
         if let Err(e) = sender.try_send(samples) {
             println!("could not set packet to network thread: {e}");
         }
-
-        callback = callback.wrapping_add(1);
 
         jack::Control::Continue
     };
