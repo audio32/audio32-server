@@ -192,7 +192,7 @@ fn jack_client(sender: Sender<Box<Samples>>, debug_sync: Arc<AtomicBool>) {
             last_time = ptp_start_time;
 
             println!(
-                "ns p buf {}/{} f: {:.3}Hz, delta: {:>5}ppm, time: {}",
+                "ns p buf{:>11}/{} f: {:.3}Hz, delta: {:>5}ppm, time: {}",
                 nanos_per_buffer,
                 buf_size,
                 sampling_freq,
