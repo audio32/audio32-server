@@ -1,7 +1,11 @@
 extern crate core;
 
 use az::CheckedCast;
+use jack::Frames;
+use std::io;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Sender;
@@ -9,7 +13,11 @@ use tokio::sync::mpsc::Sender;
 const INTERFACES_PER_DEVICE: usize = 4;
 const CHANNELS_PER_INTERFACE: usize = 8;
 
-const MAXIMUM_BUFFER_ALLOWED: usize = 4096 * CHANNELS_PER_INTERFACE; // 8 for 8 channels per interface
+// Set this to true and server will send only zeros except a 0xFFFF all N samples
+// very useful for synchronization perfing
+const DEBUG_SYNC: bool = false;
+
+const MAXIMUM_BUFFER_ALLOWED: usize = 4096 * CHANNELS_PER_INTERFACE;
 
 type Sample = i16;
 
@@ -33,10 +41,12 @@ async fn main() {
     let res = socket.recv_from(&mut buf);
     println!("res{:?}   {:?}", res, buf);*/
     let (tx, mut rx) = mpsc::channel(4);
+    let debug_sync = Arc::new(AtomicBool::new(false));
 
     {
+        let debug_sync = debug_sync.clone();
         let tx0 = tx.clone();
-        std::thread::spawn(move || jack_client(tx0));
+        std::thread::spawn(move || jack_client(tx0, debug_sync));
     }
 
     loop {
@@ -104,7 +114,7 @@ fn get_time() -> u128 {
     timespec.tv_nsec as u128 + timespec.tv_sec as u128 * 1_000_000_000u128
 }
 
-fn jack_client(sender: Sender<Box<Samples>>) {
+fn jack_client(sender: Sender<Box<Samples>>, debug_sync: Arc<AtomicBool>) {
     // 1. Create client
     let (client, _status) = jack::Client::new(
         &format!(
@@ -124,15 +134,16 @@ fn jack_client(sender: Sender<Box<Samples>>) {
             .unwrap();
         in_ports.push(a);
     }
-    const CALC_EVERY: u32 = 512;
-    let mut callback = 0;
+    const CALC_EVERY: u32 = 48_000;
     let mut last_time = get_time();
-    let mut last_sampling_freq = 0u128;
+    let mut last_sample = 0;
+    let mut last_sampling_freq = 0f64;
+    let mut last_info_show = 0;
     // new
     let mut times = vec![(0, 0); 1024 * 16];
     let mut prev_time = get_time();
     let mut i = 0;
-
+    let debug_sync2 = debug_sync.clone();
     let process_callback = move |client: &jack::Client, ps: &jack::ProcessScope| -> jack::Control {
         let (time, jack_time, measurement_delay) = (0..3)
             .map(|_| {
@@ -144,7 +155,6 @@ fn jack_client(sender: Sender<Box<Samples>>) {
             })
             .min_by_key(|&(_, _, delay)| delay)
             .unwrap();
-
         if measurement_delay > 4000 {
             println!("took too long! {measurement_delay}ns");
         }
@@ -170,17 +180,23 @@ fn jack_client(sender: Sender<Box<Samples>>) {
         i = i.wrapping_add(1);
 
         let buf_size = in_ports[0].as_slice(ps).len();
-        if callback % CALC_EVERY == 0 {
+        let tmp_samples_passed = ptp_start_time_frames / 48_000 * 5;
+        if tmp_samples_passed != last_info_show {
+            last_info_show = tmp_samples_passed;
+
+            let samples_passed = ptp_start_time_frames - last_sample;
             let nanos_per_buffer = ptp_start_time.saturating_sub(last_time);
+            let sampling_freq = (samples_passed as f64 * 1e9) / nanos_per_buffer as f64;
+
+            last_sample = ptp_start_time_frames;
             last_time = ptp_start_time;
-            let sampling_freq =
-                1_000_000_000_000 * buf_size as u128 * CALC_EVERY as u128 / nanos_per_buffer;
+
             println!(
-                "ns p buf {}/{} f: {}mHz, delta: {:>5}ppm, time: {}",
+                "ns p buf{:>11}/{} f: {:.3}Hz, delta: {:>5}ppm, time: {}",
                 nanos_per_buffer,
                 buf_size,
                 sampling_freq,
-                1_000_000 - ((last_sampling_freq * 1_000_000) / sampling_freq) as i64,
+                (1_000_000.0 - ((last_sampling_freq * 1_000_000.0) / sampling_freq)) as i64,
                 time
             );
             last_sampling_freq = sampling_freq;
@@ -214,14 +230,27 @@ fn jack_client(sender: Sender<Box<Samples>>) {
                     pos += 1;
                 }
             }
+            // set evey 32 * 64th sample to 0xFFFF to perf synchronization
+            if debug_sync.load(Ordering::Relaxed) {
+                // mute all other samples
+                samples.samples.iter_mut().flatten().for_each(|s| *s = 0);
+
+                let callback_end = ptp_start_time_frames + slices[0].len() as Frames;
+                let callback_start = ptp_start_time_frames;
+                let sample_mark_pos = callback_end - (callback_end % (32 * 64));
+                if (callback_start..callback_end).contains(&sample_mark_pos) {
+                    let pos = (sample_mark_pos - callback_start) as usize;
+                    let tmp = [-1 as Sample; 8];
+                    for interface in samples.samples.iter_mut() {
+                        interface[pos * 8..][..8].copy_from_slice(&tmp);
+                    }
+                }
+            }
         }
-        let len = samples.len;
 
         if let Err(e) = sender.try_send(samples) {
             println!("could not set packet to network thread: {e}");
         }
-
-        callback = callback.wrapping_add(1);
 
         jack::Control::Continue
     };
@@ -230,6 +259,13 @@ fn jack_client(sender: Sender<Box<Samples>>) {
     // 3. Activate the client, which starts the processing.
     let active_client = client.activate_async((), process).unwrap();
     loop {
-        std::thread::sleep(std::time::Duration::from_millis(1000));
+        let stdin = io::stdin();
+        let mut buf = String::new();
+        let res = stdin.read_line(&mut buf);
+        let status = match !debug_sync2.fetch_xor(true, Ordering::Relaxed) {
+            true => "on",
+            false => "off",
+        };
+        println!("Synchronization debug mode {}", status);
     }
 }
